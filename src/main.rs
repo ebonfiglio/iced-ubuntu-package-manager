@@ -18,7 +18,7 @@ struct AppState {
     apt_packages: Vec<Package>,
     snap_packages: Vec<Package>,
     current_page: Page,
-    text_search: String,
+    name_search: String,
 }
 
 #[derive(Debug, Clone)]
@@ -49,7 +49,7 @@ impl Display for Source {
 enum Message {
     AppsLoaded(Result<PackageLists, String>),
     Navigate(Page),
-    TextSearchChange(String),
+    NameSearchChange(String),
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +64,7 @@ enum Page {
     Apt,
     Flatpak,
     Snap,
+    All,
 }
 
 impl AppState {
@@ -73,7 +74,7 @@ impl AppState {
             apt_packages: Vec::new(),
             snap_packages: Vec::new(),
             current_page: Page::Apt,
-            text_search: String::new(),
+            name_search: String::new(),
         };
 
         let task = Task::perform(load_app_lists(), Message::AppsLoaded);
@@ -95,9 +96,9 @@ impl AppState {
             },
             Message::Navigate(page) => {
                 self.current_page = page;
-                self.text_search = String::new();
+                self.name_search = String::new();
             }
-            Message::TextSearchChange(term) => self.text_search = term,
+            Message::NameSearchChange(term) => self.name_search = term,
         }
         Task::none()
     }
@@ -298,7 +299,7 @@ fn is_snap_runtime(name: &str, notes: &str) -> bool {
 impl AppState {
     fn view(&self) -> Element<'_, Message> {
         let text_search_input =
-            text_input("Name", &self.text_search).on_input(Message::TextSearchChange);
+            text_input("Name", &self.name_search).on_input(Message::NameSearchChange);
         container(row![
             get_menu(),
             column![text_search_input, get_page(&self)]
@@ -311,31 +312,46 @@ fn get_menu() -> Container<'static, Message> {
     let apt_btn = button("Apt Packages").on_press(Message::Navigate(Page::Apt));
     let flatpack_btn = button("Flatpack Packages").on_press(Message::Navigate(Page::Flatpak));
     let snap_btn = button("Snap Packages").on_press(Message::Navigate(Page::Snap));
+    let all_btn = button("All Packages").on_press(Message::Navigate(Page::All));
 
-    container(column![apt_btn, flatpack_btn, snap_btn].spacing(10)).into()
+    container(column![apt_btn, flatpack_btn, snap_btn, all_btn].spacing(10)).into()
 }
 
 fn get_page(app_state: &AppState) -> Element<'_, Message> {
-    let packages = match &app_state.current_page {
-        Page::Apt => &app_state.apt_packages,
-        Page::Flatpak => &app_state.flatpak_packages,
-        Page::Snap => &app_state.snap_packages,
+    let filtered: Vec<&Package> = match &app_state.current_page {
+        Page::Apt => app_state
+            .apt_packages
+            .iter()
+            .filter(|pkg| filter_package(pkg, &app_state.name_search))
+            .collect(),
+        Page::Flatpak => app_state
+            .flatpak_packages
+            .iter()
+            .filter(|pkg| filter_package(pkg, &app_state.name_search))
+            .collect(),
+        Page::Snap => app_state
+            .snap_packages
+            .iter()
+            .filter(|pkg| filter_package(pkg, &app_state.name_search))
+            .collect(),
+        Page::All => app_state
+            .apt_packages
+            .iter()
+            .chain(app_state.flatpak_packages.iter())
+            .chain(app_state.snap_packages.iter())
+            .filter(|pkg| filter_package(pkg, &app_state.name_search))
+            .collect(),
     };
 
-    let filtered: Vec<&Package> = packages
-        .iter()
-        .filter(|pkg| {
-            if app_state.text_search.is_empty() {
-                true
-            } else {
-                pkg.name
-                    .to_lowercase()
-                    .contains(&app_state.text_search.to_lowercase())
-            }
-        })
-        .collect();
-
     get_package_scrollable(filtered)
+}
+
+fn filter_package(pkg: &Package, name: &str) -> bool {
+    if name.is_empty() {
+        true
+    } else {
+        pkg.name.to_lowercase().contains(&name.to_lowercase())
+    }
 }
 
 fn get_package_scrollable(package_list: Vec<&Package>) -> Element<'_, Message> {
