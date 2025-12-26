@@ -1,6 +1,9 @@
 use iced::{
     Element, Length, Task, Theme,
-    widget::{Container, Scrollable, button, column, container, row, scrollable, text, text_input},
+    widget::{
+        Container, Scrollable, button, checkbox, column, container, row, scrollable, text,
+        text_input,
+    },
 };
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -19,6 +22,7 @@ struct AppState {
     snap_packages: Vec<Package>,
     current_page: Page,
     name_search: String,
+    include_system: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -26,6 +30,7 @@ struct Package {
     source: Source,
     name: String,
     version: String,
+    is_system: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +55,7 @@ enum Message {
     AppsLoaded(Result<PackageLists, String>),
     Navigate(Page),
     NameSearchChange(String),
+    IncludeSystemChange(bool),
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +81,7 @@ impl AppState {
             snap_packages: Vec::new(),
             current_page: Page::Apt,
             name_search: String::new(),
+            include_system: false,
         };
 
         let task = Task::perform(load_app_lists(), Message::AppsLoaded);
@@ -99,6 +106,7 @@ impl AppState {
                 self.name_search = String::new();
             }
             Message::NameSearchChange(term) => self.name_search = term,
+            Message::IncludeSystemChange(include_system) => self.include_system = include_system,
         }
         Task::none()
     }
@@ -205,13 +213,12 @@ pub fn load_apt() -> Result<Vec<Package>, String> {
             || name.ends_with("-data")
             || name.ends_with("-common");
 
-        if is_manual && !is_lib && !is_meta {
-            pkgs.push(Package {
-                source: Source::Apt,
-                name: name.to_string(),
-                version: version.to_string(),
-            });
-        }
+        pkgs.push(Package {
+            source: Source::Apt,
+            name: name.to_string(),
+            version: version.to_string(),
+            is_system: !(is_manual && !is_lib && !is_meta),
+        });
     }
 
     Ok(pkgs)
@@ -246,6 +253,7 @@ pub fn load_flatpak() -> Result<Vec<Package>, String> {
             source: Source::Flatpak,
             name: name.to_string(),
             version: version.to_string(),
+            is_system: false,
         });
     }
 
@@ -271,14 +279,11 @@ pub fn load_snap() -> Result<Vec<Package>, String> {
         let version = cols[1];
         let notes = cols.last().unwrap_or(&"");
 
-        if is_snap_runtime(name, notes) {
-            continue;
-        }
-
         pkgs.push(Package {
             source: Source::Snap,
             name: name.to_string(),
             version: version.to_string(),
+            is_system: is_snap_runtime(name, notes),
         });
     }
 
@@ -298,13 +303,7 @@ fn is_snap_runtime(name: &str, notes: &str) -> bool {
 
 impl AppState {
     fn view(&self) -> Element<'_, Message> {
-        let text_search_input =
-            text_input("Name", &self.name_search).on_input(Message::NameSearchChange);
-        container(row![
-            get_menu(),
-            column![text_search_input, get_page(&self)]
-        ])
-        .into()
+        container(row![get_menu(), column![get_page(&self)]]).into()
     }
 }
 
@@ -322,53 +321,71 @@ fn get_page(app_state: &AppState) -> Element<'_, Message> {
         Page::Apt => app_state
             .apt_packages
             .iter()
-            .filter(|pkg| filter_package(pkg, &app_state.name_search))
+            .filter(|pkg| filter_package(pkg, &app_state.name_search, app_state.include_system))
             .collect(),
         Page::Flatpak => app_state
             .flatpak_packages
             .iter()
-            .filter(|pkg| filter_package(pkg, &app_state.name_search))
+            .filter(|pkg| filter_package(pkg, &app_state.name_search, app_state.include_system))
             .collect(),
         Page::Snap => app_state
             .snap_packages
             .iter()
-            .filter(|pkg| filter_package(pkg, &app_state.name_search))
+            .filter(|pkg| filter_package(pkg, &app_state.name_search, app_state.include_system))
             .collect(),
         Page::All => app_state
             .apt_packages
             .iter()
             .chain(app_state.flatpak_packages.iter())
             .chain(app_state.snap_packages.iter())
-            .filter(|pkg| filter_package(pkg, &app_state.name_search))
+            .filter(|pkg| filter_package(pkg, &app_state.name_search, app_state.include_system))
             .collect(),
     };
 
-    get_package_scrollable(filtered)
+    get_package_scrollable(app_state, filtered)
 }
 
-fn filter_package(pkg: &Package, name: &str) -> bool {
+fn filter_package(pkg: &Package, name: &str, include_system: bool) -> bool {
+    let mut show = true;
     if name.is_empty() {
-        true
+        show = show && true;
     } else {
-        pkg.name.to_lowercase().contains(&name.to_lowercase())
+        show = show && pkg.name.to_lowercase().contains(&name.to_lowercase());
     }
+
+    show && (pkg.is_system == false || (pkg.is_system == true && include_system))
 }
 
-fn get_package_scrollable(package_list: Vec<&Package>) -> Element<'_, Message> {
+fn get_package_scrollable<'a>(
+    app_state: &'a AppState,
+    package_list: Vec<&'a Package>,
+) -> Element<'a, Message> {
     let header_row = row![
         text("Source").width(Length::FillPortion(2)),
         text("Name").width(Length::FillPortion(4)),
-        text("Version").width(Length::FillPortion(2))
+        text("Version").width(Length::FillPortion(4)),
+        text("System").width(Length::FillPortion(2))
+    ];
+    let filter_row = row![
+        text("Source").width(Length::FillPortion(2)),
+        text_input("Name", &app_state.name_search)
+            .on_input(Message::NameSearchChange)
+            .width(Length::FillPortion(4)),
+        text("Version").width(Length::FillPortion(4)),
+        checkbox(app_state.include_system)
+            .on_toggle(Message::IncludeSystemChange)
+            .width(Length::FillPortion(2))
     ];
     container(
         scrollable(package_list.iter().enumerate().fold(
-            column![header_row].spacing(2),
-            |col, (_, app)| {
+            column![header_row, filter_row].spacing(2),
+            |col, (_, package)| {
                 col.push(
                     row![
-                        text(format!("{:?}", app.source)).width(Length::FillPortion(1)),
-                        text(&app.name).width(Length::FillPortion(2)),
-                        text(&app.version).width(Length::FillPortion(2)),
+                        text(format!("{:?}", package.source)).width(Length::FillPortion(1)),
+                        text(&package.name).width(Length::FillPortion(2)),
+                        text(&package.version).width(Length::FillPortion(2)),
+                        checkbox(package.is_system).width(Length::FillPortion(2)),
                     ]
                     .spacing(10)
                     .padding(5),
