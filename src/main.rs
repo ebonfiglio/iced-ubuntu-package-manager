@@ -22,6 +22,7 @@ struct AppState {
     snap_packages: Vec<Package>,
     current_page: Page,
     name_search: String,
+    source_search: String,
     include_system: bool,
 }
 
@@ -55,6 +56,7 @@ enum Message {
     AppsLoaded(Result<PackageLists, String>),
     Navigate(Page),
     NameSearchChange(String),
+    SourceSearchChange(String),
     IncludeSystemChange(bool),
 }
 
@@ -81,6 +83,7 @@ impl AppState {
             snap_packages: Vec::new(),
             current_page: Page::Apt,
             name_search: String::new(),
+            source_search: String::new(),
             include_system: false,
         };
 
@@ -106,6 +109,7 @@ impl AppState {
                 self.name_search = String::new();
             }
             Message::NameSearchChange(term) => self.name_search = term,
+            Message::SourceSearchChange(term) => self.source_search = term,
             Message::IncludeSystemChange(include_system) => self.include_system = include_system,
         }
         Task::none()
@@ -321,36 +325,75 @@ fn get_page(app_state: &AppState) -> Element<'_, Message> {
         Page::Apt => app_state
             .apt_packages
             .iter()
-            .filter(|pkg| filter_package(pkg, &app_state.name_search, app_state.include_system))
+            .filter(|pkg| {
+                filter_package(
+                    pkg,
+                    &app_state.name_search,
+                    &app_state.source_search,
+                    app_state.include_system,
+                )
+            })
             .collect(),
         Page::Flatpak => app_state
             .flatpak_packages
             .iter()
-            .filter(|pkg| filter_package(pkg, &app_state.name_search, app_state.include_system))
+            .filter(|pkg| {
+                filter_package(
+                    pkg,
+                    &app_state.name_search,
+                    &app_state.source_search,
+                    app_state.include_system,
+                )
+            })
             .collect(),
         Page::Snap => app_state
             .snap_packages
             .iter()
-            .filter(|pkg| filter_package(pkg, &app_state.name_search, app_state.include_system))
+            .filter(|pkg| {
+                filter_package(
+                    pkg,
+                    &app_state.name_search,
+                    &app_state.source_search,
+                    app_state.include_system,
+                )
+            })
             .collect(),
         Page::All => app_state
             .apt_packages
             .iter()
             .chain(app_state.flatpak_packages.iter())
             .chain(app_state.snap_packages.iter())
-            .filter(|pkg| filter_package(pkg, &app_state.name_search, app_state.include_system))
+            .filter(|pkg| {
+                filter_package(
+                    pkg,
+                    &app_state.name_search,
+                    &app_state.source_search,
+                    app_state.include_system,
+                )
+            })
             .collect(),
     };
 
     get_package_scrollable(app_state, filtered)
 }
 
-fn filter_package(pkg: &Package, name: &str, include_system: bool) -> bool {
+fn filter_package(pkg: &Package, name: &str, source: &str, include_system: bool) -> bool {
     let mut show = true;
     if name.is_empty() {
         show = show && true;
     } else {
         show = show && pkg.name.to_lowercase().contains(&name.to_lowercase());
+    }
+
+    if source.is_empty() {
+        show = show && true;
+    } else {
+        show = show
+            && pkg
+                .source
+                .to_string()
+                .to_lowercase()
+                .contains(&source.to_lowercase());
     }
 
     show && (pkg.is_system == false || (pkg.is_system == true && include_system))
@@ -364,10 +407,12 @@ fn get_package_scrollable<'a>(
         text("Source").width(Length::FillPortion(2)),
         text("Name").width(Length::FillPortion(4)),
         text("Version").width(Length::FillPortion(4)),
-        text("System").width(Length::FillPortion(2))
+        text("Include System").width(Length::FillPortion(2))
     ];
     let filter_row = row![
-        text("Source").width(Length::FillPortion(2)),
+        text_input("Source", &app_state.source_search)
+            .on_input(Message::SourceSearchChange)
+            .width(Length::FillPortion(2)),
         text_input("Name", &app_state.name_search)
             .on_input(Message::NameSearchChange)
             .width(Length::FillPortion(4)),
