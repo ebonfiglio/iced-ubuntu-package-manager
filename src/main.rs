@@ -1,9 +1,6 @@
 use iced::{
     Element, Length, Task, Theme,
-    widget::{
-        Container, Scrollable, button, checkbox, column, container, row, scrollable, text,
-        text_input,
-    },
+    widget::{Container, button, checkbox, column, container, row, scrollable, text, text_input},
 };
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -23,7 +20,10 @@ struct AppState {
     current_page: Page,
     name_search: String,
     source_search: String,
+    version_search: String,
     include_system: bool,
+    sorted_column: String,
+    sort_type: String,
 }
 
 #[derive(Debug, Clone)]
@@ -57,7 +57,9 @@ enum Message {
     Navigate(Page),
     NameSearchChange(String),
     SourceSearchChange(String),
+    VersionSearchChange(String),
     IncludeSystemChange(bool),
+    SortColumn(String),
 }
 
 #[derive(Debug, Clone)]
@@ -84,7 +86,10 @@ impl AppState {
             current_page: Page::Apt,
             name_search: String::new(),
             source_search: String::new(),
+            version_search: String::new(),
             include_system: false,
+            sort_type: String::new(),
+            sorted_column: String::new(),
         };
 
         let task = Task::perform(load_app_lists(), Message::AppsLoaded);
@@ -110,7 +115,20 @@ impl AppState {
             }
             Message::NameSearchChange(term) => self.name_search = term,
             Message::SourceSearchChange(term) => self.source_search = term,
+            Message::VersionSearchChange(term) => self.version_search = term,
             Message::IncludeSystemChange(include_system) => self.include_system = include_system,
+            Message::SortColumn(column) => {
+                if self.sorted_column == column {
+                    if self.sort_type == "desc" {
+                        self.sort_type = "asc".to_string();
+                    } else {
+                        self.sort_type = "desc".to_string();
+                    }
+                } else {
+                    self.sorted_column = column;
+                    self.sort_type = "desc".to_string();
+                }
+            }
         }
         Task::none()
     }
@@ -193,7 +211,7 @@ fn load_manual_set() -> Result<HashSet<String>, String> {
         .collect())
 }
 
-pub fn load_apt() -> Result<Vec<Package>, String> {
+fn load_apt() -> Result<Vec<Package>, String> {
     let manual = load_manual_set()?;
 
     let stdout = run_cmd("dpkg-query", &["-W", "-f=${Package}\t${Version}\n"])?;
@@ -228,7 +246,7 @@ pub fn load_apt() -> Result<Vec<Package>, String> {
     Ok(pkgs)
 }
 
-pub fn load_flatpak() -> Result<Vec<Package>, String> {
+fn load_flatpak() -> Result<Vec<Package>, String> {
     let stdout = run_cmd(
         "flatpak",
         &[
@@ -264,7 +282,7 @@ pub fn load_flatpak() -> Result<Vec<Package>, String> {
     Ok(pkgs)
 }
 
-pub fn load_snap() -> Result<Vec<Package>, String> {
+fn load_snap() -> Result<Vec<Package>, String> {
     let stdout = run_cmd("snap", &["list"])?;
 
     let mut pkgs = Vec::new();
@@ -321,7 +339,7 @@ fn get_menu() -> Container<'static, Message> {
 }
 
 fn get_page(app_state: &AppState) -> Element<'_, Message> {
-    let filtered: Vec<&Package> = match &app_state.current_page {
+    let mut filtered: Vec<&Package> = match &app_state.current_page {
         Page::Apt => app_state
             .apt_packages
             .iter()
@@ -330,6 +348,7 @@ fn get_page(app_state: &AppState) -> Element<'_, Message> {
                     pkg,
                     &app_state.name_search,
                     &app_state.source_search,
+                    &app_state.version_search,
                     app_state.include_system,
                 )
             })
@@ -342,6 +361,7 @@ fn get_page(app_state: &AppState) -> Element<'_, Message> {
                     pkg,
                     &app_state.name_search,
                     &app_state.source_search,
+                    &app_state.version_search,
                     app_state.include_system,
                 )
             })
@@ -354,6 +374,7 @@ fn get_page(app_state: &AppState) -> Element<'_, Message> {
                     pkg,
                     &app_state.name_search,
                     &app_state.source_search,
+                    &app_state.version_search,
                     app_state.include_system,
                 )
             })
@@ -368,16 +389,41 @@ fn get_page(app_state: &AppState) -> Element<'_, Message> {
                     pkg,
                     &app_state.name_search,
                     &app_state.source_search,
+                    &app_state.version_search,
                     app_state.include_system,
                 )
             })
             .collect(),
     };
 
+    if !app_state.sorted_column.is_empty() {
+        filtered.sort_by(|a, b| {
+            let ordering = match app_state.sorted_column.as_str() {
+                "source" => a.source.to_string().cmp(&b.source.to_string()),
+                "name" => a.name.cmp(&b.name),
+                "version" => a.version.cmp(&b.version),
+                "is_system" => a.is_system.cmp(&b.is_system),
+                _ => std::cmp::Ordering::Equal,
+            };
+
+            if app_state.sort_type == "asc" {
+                ordering
+            } else {
+                ordering.reverse()
+            }
+        });
+    }
+
     get_package_scrollable(app_state, filtered)
 }
 
-fn filter_package(pkg: &Package, name: &str, source: &str, include_system: bool) -> bool {
+fn filter_package(
+    pkg: &Package,
+    name: &str,
+    source: &str,
+    version: &str,
+    include_system: bool,
+) -> bool {
     let mut show = true;
     if name.is_empty() {
         show = show && true;
@@ -396,6 +442,12 @@ fn filter_package(pkg: &Package, name: &str, source: &str, include_system: bool)
                 .contains(&source.to_lowercase());
     }
 
+    if version.is_empty() {
+        show = show && true;
+    } else {
+        show = show && pkg.version.to_lowercase().contains(&version.to_lowercase());
+    }
+
     show && (pkg.is_system == false || (pkg.is_system == true && include_system))
 }
 
@@ -403,12 +455,45 @@ fn get_package_scrollable<'a>(
     app_state: &'a AppState,
     package_list: Vec<&'a Package>,
 ) -> Element<'a, Message> {
+    let get_column_label = |name: &str, column_id: &str| {
+        format!(
+            "{}{}",
+            name,
+            if app_state.sorted_column == column_id {
+                if app_state.sort_type == "asc" {
+                    " ↑"
+                } else {
+                    " ↓"
+                }
+            } else {
+                ""
+            }
+        )
+    };
+    let source_label = get_column_label("Source", "source");
+    let name_label = get_column_label("Name", "name");
+    let version_label = get_column_label("Version", "version");
+    let system_label = get_column_label("Include System", "is_system");
+
     let header_row = row![
-        text("Source").width(Length::FillPortion(2)),
-        text("Name").width(Length::FillPortion(4)),
-        text("Version").width(Length::FillPortion(4)),
-        text("Include System").width(Length::FillPortion(2))
+        button(text(source_label))
+            .style(button::secondary)
+            .on_press(Message::SortColumn("source".to_string()))
+            .width(Length::FillPortion(2)),
+        button(text(name_label))
+            .style(button::secondary)
+            .on_press(Message::SortColumn("name".to_string()))
+            .width(Length::FillPortion(4)),
+        button(text(version_label))
+            .style(button::secondary)
+            .on_press(Message::SortColumn("version".to_string()))
+            .width(Length::FillPortion(4)),
+        button(text(system_label))
+            .style(button::secondary)
+            .on_press(Message::SortColumn("is_system".to_string()))
+            .width(Length::FillPortion(2))
     ];
+
     let filter_row = row![
         text_input("Source", &app_state.source_search)
             .on_input(Message::SourceSearchChange)
@@ -416,7 +501,9 @@ fn get_package_scrollable<'a>(
         text_input("Name", &app_state.name_search)
             .on_input(Message::NameSearchChange)
             .width(Length::FillPortion(4)),
-        text("Version").width(Length::FillPortion(4)),
+        text_input("Version", &app_state.version_search)
+            .on_input(Message::VersionSearchChange)
+            .width(Length::FillPortion(4)),
         checkbox(app_state.include_system)
             .on_toggle(Message::IncludeSystemChange)
             .width(Length::FillPortion(2))
@@ -427,9 +514,9 @@ fn get_package_scrollable<'a>(
             |col, (_, package)| {
                 col.push(
                     row![
-                        text(format!("{:?}", package.source)).width(Length::FillPortion(1)),
-                        text(&package.name).width(Length::FillPortion(2)),
-                        text(&package.version).width(Length::FillPortion(2)),
+                        text(format!("{:?}", package.source)).width(Length::FillPortion(2)),
+                        text(&package.name).width(Length::FillPortion(4)),
+                        text(&package.version).width(Length::FillPortion(4)),
                         checkbox(package.is_system).width(Length::FillPortion(2)),
                     ]
                     .spacing(10)
