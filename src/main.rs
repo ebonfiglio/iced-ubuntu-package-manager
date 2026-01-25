@@ -4,6 +4,7 @@ use iced::{
 };
 use std::collections::HashSet;
 use std::fmt::Display;
+use std::io::{BufRead, BufReader};
 use std::process::Command;
 
 pub fn main() -> iced::Result {
@@ -215,35 +216,38 @@ fn load_apt() -> Result<Vec<Package>, String> {
     let manual = load_manual_set()?;
 
     let stdout = run_cmd("dpkg-query", &["-W", "-f=${Package}\t${Version}\n"])?;
+    let reader = BufReader::new(stdout.as_bytes());
 
-    let mut pkgs = Vec::new();
+    let packages: Vec<Package> = reader
+        .lines()
+        .filter_map(|line| {
+            let line = line.ok()?;
+            let mut parts = line.split('\t');
 
-    for line in stdout.lines() {
-        let mut parts = line.split('\t');
+            let name = parts.next()?.trim();
+            let version = parts.next()?.trim();
 
-        let name = parts.next().unwrap_or("").trim();
-        let version = parts.next().unwrap_or("").trim();
+            if name.is_empty() {
+                return None;
+            }
 
-        if name.is_empty() {
-            continue;
-        }
+            let is_manual = manual.contains(name);
+            let is_lib = name.starts_with("lib");
+            let is_meta = name.starts_with("linux-")
+                || name.starts_with("language-pack-")
+                || name.ends_with("-data")
+                || name.ends_with("-common");
 
-        let is_manual = manual.contains(name);
-        let is_lib = name.starts_with("lib");
-        let is_meta = name.starts_with("linux-")
-            || name.starts_with("language-pack-")
-            || name.ends_with("-data")
-            || name.ends_with("-common");
+            Some(Package {
+                source: Source::Apt,
+                name: name.to_string(),
+                version: version.to_string(),
+                is_system: !(is_manual && !is_lib && !is_meta),
+            })
+        })
+        .collect();
 
-        pkgs.push(Package {
-            source: Source::Apt,
-            name: name.to_string(),
-            version: version.to_string(),
-            is_system: !(is_manual && !is_lib && !is_meta),
-        });
-    }
-
-    Ok(pkgs)
+    Ok(packages)
 }
 
 fn load_flatpak() -> Result<Vec<Package>, String> {
