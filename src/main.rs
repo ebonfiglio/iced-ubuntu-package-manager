@@ -31,8 +31,6 @@ struct Package {
     source: Source,
     name: String,
     version: String,
-    latest_version: Option<String>,
-    update_available: bool,
     is_system: bool,
 }
 
@@ -62,7 +60,6 @@ enum Message {
     VersionSearchChange(String),
     IncludeSystemChange(bool),
     SortColumn(String),
-    UpdatePackage(Package),
 }
 
 #[derive(Debug, Clone)]
@@ -130,19 +127,6 @@ impl AppState {
                 } else {
                     self.sorted_column = column;
                     self.sort_type = "desc".to_string();
-                }
-            }
-            Message::UpdatePackage(package) => {
-                let result = match package.source {
-                    Source::Apt => {
-                        run_cmd("sudo", &["apt", "install", "--only-upgrade", &package.name])
-                    }
-                    Source::Flatpak => run_cmd("flatpak", &["update", &package.name]),
-                    Source::Snap => run_cmd("snap", &["refresh", &package.name]),
-                };
-
-                if let Err(e) = result {
-                    eprintln!("Failed to update {}: {}", package.name, e);
                 }
             }
         }
@@ -251,17 +235,11 @@ fn load_apt() -> Result<Vec<Package>, String> {
             || name.ends_with("-data")
             || name.ends_with("-common");
 
-        let latest_version = fetch_latest_version(Source::Apt, name);
-
         pkgs.push(Package {
             source: Source::Apt,
             name: name.to_string(),
             version: version.to_string(),
-            latest_version: latest_version.clone(),
             is_system: !(is_manual && !is_lib && !is_meta),
-            update_available: latest_version
-                .as_ref()
-                .map_or(false, |latest| latest != version),
         });
     }
 
@@ -293,17 +271,11 @@ fn load_flatpak() -> Result<Vec<Package>, String> {
             continue;
         }
 
-        let latest_version = fetch_latest_version(Source::Flatpak, name);
-
         pkgs.push(Package {
-            source: Source::Apt,
+            source: Source::Flatpak,
             name: name.to_string(),
             version: version.to_string(),
-            latest_version: latest_version.clone(),
             is_system: false,
-            update_available: latest_version
-                .as_ref()
-                .map_or(false, |latest| latest != version),
         });
     }
 
@@ -329,17 +301,11 @@ fn load_snap() -> Result<Vec<Package>, String> {
         let version = cols[1];
         let notes = cols.last().unwrap_or(&"");
 
-        let latest_version = fetch_latest_version(Source::Snap, name);
-
         pkgs.push(Package {
-            source: Source::Apt,
+            source: Source::Snap,
             name: name.to_string(),
             version: version.to_string(),
-            latest_version: latest_version.clone(),
             is_system: is_snap_runtime(name, notes),
-            update_available: latest_version
-                .as_ref()
-                .map_or(false, |latest| latest != version),
         });
     }
 
@@ -355,39 +321,6 @@ fn is_snap_runtime(name: &str, notes: &str) -> bool {
         || name.starts_with("gnome-")
         || name.starts_with("gtk-")
         || name.starts_with("mesa-")
-}
-
-fn fetch_latest_version(source: Source, name: &str) -> Option<String> {
-    match source {
-        Source::Apt => {
-            let output = run_cmd("apt-cache", &["policy", name]).ok()?;
-            output
-                .lines()
-                .find(|line| line.trim().starts_with("Candidate:"))
-                .map(|line| line.trim().replace("Candidate: ", ""))
-        }
-        Source::Flatpak => {
-            let output = run_cmd("flatpak", &["remote-info", name]).ok()?;
-            output
-                .lines()
-                .find(|line| line.trim().starts_with("Version:"))
-                .map(|line| line.trim().replace("Version: ", ""))
-        }
-        Source::Snap => {
-            let output = run_cmd("snap", &["info", name]).ok()?;
-            output
-                .lines()
-                .find(|line| line.trim().starts_with("latest/stable:"))
-                .map(|line| {
-                    line.trim()
-                        .replace("latest/stable:", "")
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or("")
-                        .to_string()
-                })
-        }
-    }
 }
 
 impl AppState {
@@ -541,8 +474,7 @@ fn get_package_scrollable<'a>(
     let name_label = get_column_label("Name", "name");
     let version_label = get_column_label("Version", "version");
     let system_label = get_column_label("Include System", "is_system");
-    let latest_version = get_column_label("Latest Version", "latest_version");
-    let update_available = get_column_label("Update Available", "update_available");
+
     let header_row = row![
         button(text(source_label))
             .style(button::secondary)
@@ -557,14 +489,6 @@ fn get_package_scrollable<'a>(
             .on_press(Message::SortColumn("version".to_string()))
             .width(Length::FillPortion(4)),
         button(text(system_label))
-            .style(button::secondary)
-            .on_press(Message::SortColumn("is_system".to_string()))
-            .width(Length::FillPortion(2)),
-        button(text(latest_version))
-            .style(button::secondary)
-            .on_press(Message::SortColumn("is_system".to_string()))
-            .width(Length::FillPortion(4)),
-        button(text(update_available))
             .style(button::secondary)
             .on_press(Message::SortColumn("is_system".to_string()))
             .width(Length::FillPortion(2))
@@ -583,8 +507,6 @@ fn get_package_scrollable<'a>(
         checkbox(app_state.include_system)
             .on_toggle(Message::IncludeSystemChange)
             .width(Length::FillPortion(2)),
-        text("Latest").width(Length::FillPortion(4)),
-        text("Update Available").width(Length::FillPortion(2))
     ];
     container(
         scrollable(package_list.iter().enumerate().fold(
@@ -595,18 +517,7 @@ fn get_package_scrollable<'a>(
                         text(format!("{:?}", package.source)).width(Length::FillPortion(2)),
                         text(&package.name).width(Length::FillPortion(4)),
                         text(&package.version).width(Length::FillPortion(4)),
-                        checkbox(package.is_system).width(Length::FillPortion(2)),
-                        text(package.latest_version.clone().unwrap_or_default())
-                            .width(Length::FillPortion(4)),
-                        if package.update_available {
-                            button("Update")
-                                .on_press(Message::UpdatePackage((*package).clone()))
-                                .width(Length::FillPortion(2))
-                        } else {
-                            button("Up-to-date")
-                                .style(button::secondary)
-                                .width(Length::FillPortion(2))
-                        }
+                        checkbox(package.is_system).width(Length::FillPortion(2))
                     ]
                     .spacing(10)
                     .padding(5),
