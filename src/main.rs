@@ -34,7 +34,7 @@ struct Package {
     is_system: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Source {
     Flatpak,
     Apt,
@@ -339,65 +339,28 @@ fn get_menu() -> Container<'static, Message> {
 }
 
 fn get_page(app_state: &AppState) -> Element<'_, Message> {
-    let mut filtered: Vec<&Package> = match &app_state.current_page {
-        Page::Apt => app_state
-            .apt_packages
-            .iter()
-            .filter(|pkg| {
-                filter_package(
-                    pkg,
-                    &app_state.name_search,
-                    &app_state.source_search,
-                    &app_state.version_search,
-                    app_state.include_system,
-                )
-            })
-            .collect(),
-        Page::Flatpak => app_state
-            .flatpak_packages
-            .iter()
-            .filter(|pkg| {
-                filter_package(
-                    pkg,
-                    &app_state.name_search,
-                    &app_state.source_search,
-                    &app_state.version_search,
-                    app_state.include_system,
-                )
-            })
-            .collect(),
-        Page::Snap => app_state
-            .snap_packages
-            .iter()
-            .filter(|pkg| {
-                filter_package(
-                    pkg,
-                    &app_state.name_search,
-                    &app_state.source_search,
-                    &app_state.version_search,
-                    app_state.include_system,
-                )
-            })
-            .collect(),
-        Page::All => app_state
-            .apt_packages
-            .iter()
-            .chain(app_state.flatpak_packages.iter())
-            .chain(app_state.snap_packages.iter())
-            .filter(|pkg| {
-                filter_package(
-                    pkg,
-                    &app_state.name_search,
-                    &app_state.source_search,
-                    &app_state.version_search,
-                    app_state.include_system,
-                )
-            })
-            .collect(),
-    };
+    let name_search = app_state.name_search.to_lowercase();
+    let source_search = app_state.source_search.to_lowercase();
+    let version_search = app_state.version_search.to_lowercase();
+
+    let mut filtered: Vec<&Package> = app_state
+        .apt_packages
+        .iter()
+        .chain(app_state.flatpak_packages.iter())
+        .chain(app_state.snap_packages.iter())
+        .filter(|pkg| {
+            filter_package(
+                pkg,
+                &name_search,
+                &source_search,
+                &version_search,
+                app_state.include_system,
+            )
+        })
+        .collect();
 
     if !app_state.sorted_column.is_empty() {
-        filtered.sort_by(|a, b| {
+        filtered.sort_unstable_by(|a, b| {
             let ordering = match app_state.sorted_column.as_str() {
                 "source" => a.source.to_string().cmp(&b.source.to_string()),
                 "name" => a.name.cmp(&b.name),
@@ -414,7 +377,26 @@ fn get_page(app_state: &AppState) -> Element<'_, Message> {
         });
     }
 
-    get_package_scrollable(app_state, filtered)
+    let page_filtered: Vec<&Package> = match &app_state.current_page {
+        Page::Apt => filtered
+            .iter()
+            .filter(|pkg| pkg.source == Source::Apt)
+            .cloned()
+            .collect(),
+        Page::Flatpak => filtered
+            .iter()
+            .filter(|pkg| pkg.source == Source::Flatpak)
+            .cloned()
+            .collect(),
+        Page::Snap => filtered
+            .iter()
+            .filter(|pkg| pkg.source == Source::Snap)
+            .cloned()
+            .collect(),
+        Page::All => filtered,
+    };
+
+    get_package_scrollable(app_state, page_filtered)
 }
 
 fn filter_package(
@@ -424,31 +406,20 @@ fn filter_package(
     version: &str,
     include_system: bool,
 ) -> bool {
-    let mut show = true;
-    if name.is_empty() {
-        show = show && true;
-    } else {
-        show = show && pkg.name.to_lowercase().contains(&name.to_lowercase());
+    if !name.is_empty() && !pkg.name.to_lowercase().contains(name) {
+        return false;
     }
 
-    if source.is_empty() {
-        show = show && true;
-    } else {
-        show = show
-            && pkg
-                .source
-                .to_string()
-                .to_lowercase()
-                .contains(&source.to_lowercase());
+    if !source.is_empty() && !pkg.source.to_string().to_lowercase().contains(source) {
+        return false;
     }
 
-    if version.is_empty() {
-        show = show && true;
-    } else {
-        show = show && pkg.version.to_lowercase().contains(&version.to_lowercase());
+    if !version.is_empty() && !pkg.version.to_lowercase().contains(version) {
+        return false;
     }
 
-    show && (pkg.is_system == false || (pkg.is_system == true && include_system))
+    // Include system packages only if the flag is set
+    include_system || !pkg.is_system
 }
 
 fn get_package_scrollable<'a>(
